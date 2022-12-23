@@ -1,0 +1,593 @@
+
+# Purpose: 과제코드_CO (마케팅리포트고도화) 과제 관련 거리 기준으로 같은 빌딩 내 기지국 클러스터 형성
+# 기지국 클러스터는 계층적 군집분석 알고리즘을 활용하여
+# 각각 기지국 간 최대 거리를 30m로 설정하여 클러스터 형성
+# Inputs: BDPVIEW.l1nat_lte_cel_mstr_bas, BDPVIEW.L0EXT_F_P_BUS_STOP_AD_COST, BDPL200.L2COT_DYNA_ANAL_MAJR_MKAR_TEMP
+# Outputs: BDPL200.L2COT_DYNA_ANAL_CLUSTER_SU_11_TEMP
+#         BDPL200.L2COT_DYNA_ANAL_CLUSTER_GGI_11_TEMP
+#         BDPL200.L2COT_DYNA_ANAL_CLUSTER_ICN_11_TEMP
+#         BDPL200.L2COT_DYNA_ANAL_CLUSTER_DJ_11_TEMP
+#         BDPL200.L2COT_DYNA_ANAL_CLUSTER_DG_11_TEMP
+#         BDPL200.L2COT_DYNA_ANAL_CLUSTER_GJ_11_TEMP
+#         BDPL200.L2COT_DYNA_ANAL_CLUSTER_BSN_11_TEMP
+# Author: 송영욱
+# Date Created: 2018-09-21
+
+
+
+starttime <- proc.time()
+
+source("/data/Glibrary/globalFuncs.R")
+library(sp)
+library(geosphere)
+library(dplyr)
+
+
+######## 기술 메타 데이타 정의 시작 부분 ########
+G_AddTechMetaInfo("데이터수집", "변수정제/선택", startInsert=T)
+G_AddTechMetaInfo("변수정제/선택", "위/경도 거리 계산")
+G_AddTechMetaInfo("위/경도 거리 계산", "modeling(Hierarchical Cluster)")
+G_AddTechMetaInfo("modeling(Hierarchical Cluster)",  "클러스터 내 평균 위/경도 좌표 계산")
+G_AddTechMetaInfo("클러스터 내 평균 위/경도 좌표 계산" , "클러스터 간 최소 거리 계산")
+G_AddTechMetaInfo("클러스터 간 최소 거리 계산" , "클러스터별 '구/동' 단위 광고비 매칭" , lastInsert=T)
+G_ViewTechMetaInfo()
+######## 기술 메타 데이타 정의 끝 부분 ########
+
+
+######## 기술 메타 수행 단계 설정 ########
+
+G_SetCurrentTechMeta("데이터수집")
+
+# 서울 기지국
+
+cell.su <- G_ExecuteSql(dbSource = "hadoop", sqlstmt = "SELECT row_number() over (order by A.lte_cel_id) AS SEQ , A.*
+                        FROM ( SELECT * FROM BDPVIEW.l1nat_lte_cel_mstr_bas
+                        WHERE city_nm='서울시' AND msvc_loc_dv_nm NOT LIKE'%지하철_지하%' ) A   ")
+
+adTown.su <- G_ExecuteSql(dbSource = "hadoop", sqlstmt = " SELECT town as town_nm, avg(unit_cost) AS town_mean_cost FROM BDPVIEW.L0EXT_F_P_BUS_STOP_AD_COST GROUP BY town ")
+adCcw.su <- G_ExecuteSql(dbSource = "hadoop", sqlstmt = "SELECT ccw as ccw_nm , avg(unit_cost) AS ccw_mean_cost FROM BDPVIEW.L0EXT_F_P_BUS_STOP_AD_COST GROUP BY ccw")
+
+# 경기 기지국
+
+cell.ggi <- G_ExecuteSql(dbSource = "hadoop",  sqlstmt = "SELECT ROW_NUMBER() OVER (ORDER BY LTE_CEL_ID) AS SEQ, *
+                         FROM ( SELECT A.*
+                         FROM ( SELECT
+                         *
+                         , CONCAT(CITY_NM, ' ', CCW_NM , ' ', TOWN_NM) AS DONG_ADDR
+                         FROM BDPVIEW.l1nat_lte_cel_mstr_bas
+                         WHERE 1=1
+                         AND CITY_NM = '경기도'
+                         AND MSVC_LOC_DV_NM NOT LIKE'%지하철_지하%' ) AS A
+                         INNER JOIN ( SELECT *
+                         FROM L2COT_DYNA_ANAL_MAJR_MKAR_TEMP
+                         WHERE 1=1
+                         AND ADM_AREA_NM LIKE '%경기도%'
+                         AND NOT( ADM_AREA_NM LIKE '%수원시%'
+                         OR ADM_AREA_NM LIKE '%고양시%'
+                         OR ADM_AREA_NM LIKE '%용인시%'
+                         OR ADM_AREA_NM LIKE '%성남시%'
+                         OR ADM_AREA_NM LIKE '%부천시%'
+                         OR ADM_AREA_NM LIKE '%안산시%'
+                         OR ADM_AREA_NM LIKE '%화성시%'
+                         OR ADM_AREA_NM LIKE '%남양주시%'
+                         OR ADM_AREA_NM LIKE '%안양시%') ) AS B
+                         ON A.DONG_ADDR = B.ADM_AREA_NM
+                         UNION ALL
+                         SELECT
+                         *
+                         , CONCAT(CITY_NM, ' ', CCW_NM , ' ', TOWN_NM) AS DONG_ADDR
+                         FROM BDPVIEW.l1nat_lte_cel_mstr_bas
+                         WHERE 1=1
+                         AND CITY_NM = '경기도'
+                         AND MSVC_LOC_DV_NM NOT LIKE'%지하철_지하%'
+                         AND ( CCW_NM LIKE '%수원시%'
+                         OR CCW_NM LIKE '%고양시%'
+                         OR CCW_NM LIKE '%용인시%'
+                         OR CCW_NM LIKE '%성남시%'
+                         OR CCW_NM LIKE '%부천시%'
+                         OR CCW_NM LIKE '%안산시%'
+                         OR CCW_NM LIKE '%화성시%'
+                         OR CCW_NM LIKE '%남양주시%'
+                         OR CCW_NM LIKE '%안양시%' ) ) T ")
+
+# 인천 기지국
+
+cell.icn <- G_ExecuteSql(dbSource = "hadoop", sqlstmt = "SELECT ROW_NUMBER() OVER (ORDER BY LTE_CEL_ID) AS SEQ, *
+                         FROM ( SELECT *
+                         FROM ( SELECT
+                         *
+                         , CONCAT(CITY_NM, ' ', CCW_NM , ' ', TOWN_NM) AS DONG_ADDR
+                         FROM BDPVIEW.l1nat_lte_cel_mstr_bas
+                         WHERE 1=1
+                         AND CITY_NM = '인천시'
+                         AND MSVC_LOC_DV_NM NOT LIKE'%지하철_지하%' ) AS A
+                         INNER JOIN ( SELECT *
+                         FROM L2COT_DYNA_ANAL_MAJR_MKAR_TEMP
+                         WHERE 1=1
+                         AND ADM_AREA_NM LIKE '%인천시%' ) AS B
+                         ON A.DONG_ADDR = B.ADM_AREA_NM ) T ")
+
+# 대구 기지국
+
+cell.dg <- G_ExecuteSql(dbSource = "hadoop", sqlstmt = "SELECT ROW_NUMBER() OVER (ORDER BY LTE_CEL_ID) AS SEQ, *
+                        FROM ( SELECT *
+                        FROM ( SELECT
+                        *
+                        , CONCAT(CITY_NM, ' ', CCW_NM , ' ', TOWN_NM) AS DONG_ADDR
+                        FROM BDPVIEW.l1nat_lte_cel_mstr_bas
+                        WHERE 1=1
+                        AND CITY_NM = '대구시'
+                        AND MSVC_LOC_DV_NM NOT LIKE'%지하철_지하%' ) AS A
+                        INNER JOIN ( SELECT *
+                        FROM L2COT_DYNA_ANAL_MAJR_MKAR_TEMP
+                        WHERE 1=1
+                        AND ADM_AREA_NM LIKE '%대구시%' ) AS B
+                        ON A.DONG_ADDR = B.ADM_AREA_NM ) T ")
+
+# 부산 기지국
+
+cell.bsn <- G_ExecuteSql(dbSource = "hadoop", sqlstmt = "SELECT ROW_NUMBER() OVER (ORDER BY LTE_CEL_ID) AS SEQ, *
+                         FROM ( SELECT *
+                         FROM ( SELECT
+                         *
+                         , CONCAT(CITY_NM, ' ', CCW_NM , ' ', TOWN_NM) AS DONG_ADDR
+                         FROM BDPVIEW.l1nat_lte_cel_mstr_bas
+                         WHERE 1=1
+                         AND CITY_NM = '부산시'
+                         AND MSVC_LOC_DV_NM NOT LIKE'%지하철_지하%' ) AS A
+                         INNER JOIN ( SELECT *
+                         FROM L2COT_DYNA_ANAL_MAJR_MKAR_TEMP
+                         WHERE 1=1
+                         AND ADM_AREA_NM LIKE '%부산시%' ) AS B
+                         ON A.DONG_ADDR = B.ADM_AREA_NM ) T ")
+
+# 광주 기지국
+
+cell.gj <- G_ExecuteSql(dbSource = "hadoop", sqlstmt = "SELECT ROW_NUMBER() OVER (ORDER BY LTE_CEL_ID) AS SEQ, *
+                        FROM ( SELECT *
+                        FROM ( SELECT
+                        *
+                        , CONCAT(CITY_NM, ' ', CCW_NM , ' ', TOWN_NM) AS DONG_ADDR
+                        FROM BDPVIEW.l1nat_lte_cel_mstr_bas
+                        WHERE 1=1
+                        AND CITY_NM = '광주시'
+                        AND MSVC_LOC_DV_NM NOT LIKE'%지하철_지하%' ) AS A
+                        INNER JOIN ( SELECT *
+                        FROM L2COT_DYNA_ANAL_MAJR_MKAR_TEMP
+                        WHERE 1=1
+                        AND ADM_AREA_NM LIKE '%광주시%' ) AS B
+                        ON A.DONG_ADDR = B.ADM_AREA_NM ) T ")
+
+# 대전 기지국
+
+cell.dj <- G_ExecuteSql(dbSource = "hadoop", sqlstmt = "SELECT ROW_NUMBER() OVER (ORDER BY LTE_CEL_ID) AS SEQ, *
+                        FROM ( SELECT *
+                        FROM ( SELECT
+                        *
+                        , CONCAT(CITY_NM, ' ', CCW_NM , ' ', TOWN_NM) AS DONG_ADDR
+                        FROM BDPVIEW.l1nat_lte_cel_mstr_bas
+                        WHERE 1=1
+                        AND CITY_NM = '대전시'
+                        AND MSVC_LOC_DV_NM NOT LIKE'%지하철_지하%' ) AS A
+                        INNER JOIN ( SELECT *
+                        FROM L2COT_DYNA_ANAL_MAJR_MKAR_TEMP
+                        WHERE 1=1
+                        AND ADM_AREA_NM LIKE '%대전시%' ) AS B
+                        ON A.DONG_ADDR = B.ADM_AREA_NM ) T ")
+
+######## 기술 메타 수행 단계 설정 ########
+G_SetCurrentTechMeta("변수정제/선택")
+
+# 서울 기지국
+cellData.su <- as.data.frame(cell.su[,c("lot_crdnt_addr","lat_crdnt_addr")])
+
+# 경기 기지국
+cellData.ggi <- as.data.frame(cell.ggi[,c("lot_crdnt_addr","lat_crdnt_addr")])
+
+# 인천 기지국
+cellData.icn <- as.data.frame(cell.icn[,c("lot_crdnt_addr","lat_crdnt_addr")])
+
+# 대구 기지국
+cellData.dg <- as.data.frame(cell.dg[,c("lot_crdnt_addr","lat_crdnt_addr")])
+
+# 부산 기지국
+cellData.bsn <- as.data.frame(cell.bsn[,c("lot_crdnt_addr","lat_crdnt_addr")])
+
+# 광주 기지국
+cellData.gj <- as.data.frame(cell.gj[,c("lot_crdnt_addr","lat_crdnt_addr")])
+
+# 대전 기지국
+cellData.dj <- as.data.frame(cell.dj[,c("lot_crdnt_addr","lat_crdnt_addr")])
+
+######## 기술 메타 수행 단계 설정 ########
+G_SetCurrentTechMeta("위/경도 거리 계산")
+
+# 서울 기지국
+cellDist.su <- distm(cellData.su[,1:2])
+
+# 경기 기지국
+cellDist.ggi <- distm(cellData.ggi[,1:2])
+
+# 인천 기지국
+cellDist.icn <- distm(cellData.icn[,1:2])
+
+# 대구 기지국
+cellDist.dg <- distm(cellData.dg[,1:2])
+
+# 부산 기지국
+cellDist.bsn <- distm(cellData.bsn[,1:2])
+
+# 광주 기지국
+cellDist.gj <- distm(cellData.gj[,1:2])
+
+# 대전 기지국
+cellDist.dj <- distm(cellData.dj[,1:2])
+
+######## 기술 메타 수행 단계 설정 ########
+G_SetCurrentTechMeta("modeling(Hierarchical Cluster)")
+
+# 서울 기지국
+dendrogram.su <- hclust(as.dist(cellDist.su), method="complete")
+cell.su$clust <- cutree(dendrogram.su, h=30)
+cellClust.su <- cell.su[,c("seq","lte_cel_id","estb_addr", "ccw_nm" , "town_nm", "lat_crdnt_addr" , "lot_crdnt_addr", "clust")]
+colnames(cellClust.su)[ncol(cellClust.su)] <- c("gpName")
+
+# 경기 기지국
+dendrogram.ggi <- hclust(as.dist(cellDist.ggi), method="complete")
+cell.ggi$clust <- cutree(dendrogram.ggi, h=30)
+cellClust.ggi <- cell.ggi[,c("seq","lte_cel_id","estb_addr", "ccw_nm" , "town_nm", "lat_crdnt_addr" , "lot_crdnt_addr", "clust")]
+colnames(cellClust.ggi)[ncol(cellClust.ggi)] <- c("gpName")
+
+# 인천 기지국
+dendrogram.icn <- hclust(as.dist(cellDist.icn), method="complete")
+cell.icn$clust <- cutree(dendrogram.icn, h=30)
+cellClust.icn <- cell.icn[,c("seq","lte_cel_id","estb_addr", "ccw_nm" , "town_nm", "lat_crdnt_addr" , "lot_crdnt_addr", "clust")]
+colnames(cellClust.icn)[ncol(cellClust.icn)] <- c("gpName")
+
+# 대구 기지국
+dendrogram.dg <- hclust(as.dist(cellDist.dg), method="complete")
+cell.dg$clust <- cutree(dendrogram.dg, h=30)
+cellClust.dg <- cell.dg[,c("seq","lte_cel_id","estb_addr", "ccw_nm" , "town_nm", "lat_crdnt_addr" , "lot_crdnt_addr", "clust")]
+colnames(cellClust.dg)[ncol(cellClust.dg)] <- c("gpName")
+
+# 부산 기지국
+dendrogram.bsn <- hclust(as.dist(cellDist.bsn), method="complete")
+cell.bsn$clust <- cutree(dendrogram.bsn, h=30)
+cellClust.bsn <- cell.bsn[,c("seq","lte_cel_id","estb_addr", "ccw_nm" , "town_nm", "lat_crdnt_addr" , "lot_crdnt_addr", "clust")]
+colnames(cellClust.bsn)[ncol(cellClust.bsn)] <- c("gpName")
+
+# 광주 기지국
+dendrogram.gj <- hclust(as.dist(cellDist.gj), method="complete")
+cell.gj$clust <- cutree(dendrogram.gj, h=30)
+cellClust.gj <- cell.gj[,c("seq","lte_cel_id","estb_addr", "ccw_nm" , "town_nm", "lat_crdnt_addr" , "lot_crdnt_addr", "clust")]
+colnames(cellClust.gj)[ncol(cellClust.gj)] <- c("gpName")
+
+# 대전 기지국
+dendrogram.dj <- hclust(as.dist(cellDist.dj), method="complete")
+cell.dj$clust <- cutree(dendrogram.dj, h=30)
+cellClust.dj <- cell.dj[,c("seq","lte_cel_id","estb_addr", "ccw_nm" , "town_nm", "lat_crdnt_addr" , "lot_crdnt_addr", "clust")]
+colnames(cellClust.dj)[ncol(cellClust.dj)] <- c("gpName")
+
+######## 기술 메타 수행 단계 설정 ########
+G_SetCurrentTechMeta("클러스터 내 평균 위/경도 좌표 계산")
+
+# 서울 기지국
+grouped.su <- group_by(cellClust.su, gpName)
+cellClustMean.su <- summarise(grouped.su, meanLat = mean(lat_crdnt_addr) , meanLot = mean(lot_crdnt_addr))
+
+# 경기 기지국
+grouped.ggi <- group_by(cellClust.ggi, gpName)
+cellClustMean.ggi <- summarise(grouped.ggi, meanLat = mean(lat_crdnt_addr) , meanLot = mean(lot_crdnt_addr))
+
+# 인천 기지국
+grouped.icn <- group_by(cellClust.icn, gpName)
+cellClustMean.icn <- summarise(grouped.icn, meanLat = mean(lat_crdnt_addr) , meanLot = mean(lot_crdnt_addr))
+
+# 대구 기지국
+grouped.dg <- group_by(cellClust.dg, gpName)
+cellClustMean.dg <- summarise(grouped.dg, meanLat = mean(lat_crdnt_addr) , meanLot = mean(lot_crdnt_addr))
+
+# 부산 기지국
+grouped.bsn <- group_by(cellClust.bsn, gpName)
+cellClustMean.bsn <- summarise(grouped.bsn, meanLat = mean(lat_crdnt_addr) , meanLot = mean(lot_crdnt_addr))
+
+# 광주 기지국
+grouped.gj <- group_by(cellClust.gj, gpName)
+cellClustMean.gj <- summarise(grouped.gj, meanLat = mean(lat_crdnt_addr) , meanLot = mean(lot_crdnt_addr))
+
+# 대전 기지국
+grouped.dj <- group_by(cellClust.dj, gpName)
+cellClustMean.dj <- summarise(grouped.dj, meanLat = mean(lat_crdnt_addr) , meanLot = mean(lot_crdnt_addr))
+
+######## 기술 메타 수행 단계 설정 ########
+G_SetCurrentTechMeta("클러스터 간 최소 거리 계산")
+
+# 서울 기지국
+clustData.su <- as.data.frame(cellClustMean.su[,c(3,2)])
+clustDist.su <- distm(clustData.su[,1:2])
+clustCvg.su <- matrix(nrow=nrow(clustDist.su), ncol=1)
+
+for (i in 1:nrow(clustDist.su)) {
+  clustCvg.su[i,1] <- unique(min(clustDist.su[i,-i]))/2
+}
+
+clustCvg.su <- cbind(cellClustMean.su[,1],clustCvg.su)
+cellClust2.su <- merge(x=cellClust.su, y=cellClustMean.su , by= 'gpName', all.x=TRUE )
+cellClust3.su <- merge(x=cellClust2.su, y=clustCvg.su , by= 'gpName', all.x=TRUE )
+
+# 경기 기지국
+clustData.ggi <- as.data.frame(cellClustMean.ggi[,c(3,2)])
+clustDist.ggi <- distm(clustData.ggi[,1:2])
+clustCvg.ggi <- matrix(nrow=nrow(clustDist.ggi), ncol=1)
+
+for (i in 1:nrow(clustDist.ggi)) {
+  clustCvg.ggi[i,1] <- unique(min(clustDist.ggi[i,-i]))/2
+}
+
+clustCvg.ggi <- cbind(cellClustMean.ggi[,1],clustCvg.ggi)
+cellClust2.ggi <- merge(x=cellClust.ggi, y=cellClustMean.ggi , by= 'gpName', all.x=TRUE )
+cellClust3.ggi <- merge(x=cellClust2.ggi, y=clustCvg.ggi , by= 'gpName', all.x=TRUE )
+
+# 인천 기지국
+clustData.icn <- as.data.frame(cellClustMean.icn[,c(3,2)])
+clustDist.icn <- distm(clustData.icn[,1:2])
+clustCvg.icn <- matrix(nrow=nrow(clustDist.icn), ncol=1)
+
+for (i in 1:nrow(clustDist.icn)) {
+  clustCvg.icn[i,1] <- unique(min(clustDist.icn[i,-i]))/2
+}
+
+clustCvg.icn <- cbind(cellClustMean.icn[,1],clustCvg.icn)
+cellClust2.icn <- merge(x=cellClust.icn, y=cellClustMean.icn , by= 'gpName', all.x=TRUE )
+cellClust3.icn <- merge(x=cellClust2.icn, y=clustCvg.icn , by= 'gpName', all.x=TRUE )
+
+# 대구 기지국
+clustData.dg <- as.data.frame(cellClustMean.dg[,c(3,2)])
+clustDist.dg <- distm(clustData.dg[,1:2])
+clustCvg.dg <- matrix(nrow=nrow(clustDist.dg), ncol=1)
+
+for (i in 1:nrow(clustDist.dg)) {
+  clustCvg.dg[i,1] <- unique(min(clustDist.dg[i,-i]))/2
+}
+
+clustCvg.dg <- cbind(cellClustMean.dg[,1],clustCvg.dg)
+cellClust2.dg <- merge(x=cellClust.dg, y=cellClustMean.dg , by= 'gpName', all.x=TRUE )
+cellClust3.dg <- merge(x=cellClust2.dg, y=clustCvg.dg , by= 'gpName', all.x=TRUE )
+
+# 부산 기지국
+clustData.bsn <- as.data.frame(cellClustMean.bsn[,c(3,2)])
+clustDist.bsn <- distm(clustData.bsn[,1:2])
+clustCvg.bsn <- matrix(nrow=nrow(clustDist.bsn), ncol=1)
+
+for (i in 1:nrow(clustDist.bsn)) {
+  clustCvg.bsn[i,1] <- unique(min(clustDist.bsn[i,-i]))/2
+}
+
+clustCvg.bsn <- cbind(cellClustMean.bsn[,1],clustCvg.bsn)
+cellClust2.bsn <- merge(x=cellClust.bsn, y=cellClustMean.bsn , by= 'gpName', all.x=TRUE )
+cellClust3.bsn <- merge(x=cellClust2.bsn, y=clustCvg.bsn , by= 'gpName', all.x=TRUE )
+
+# 광주 기지국
+clustData.gj <- as.data.frame(cellClustMean.gj[,c(3,2)])
+clustDist.gj <- distm(clustData.gj[,1:2])
+clustCvg.gj <- matrix(nrow=nrow(clustDist.gj), ncol=1)
+
+
+for (i in 1:nrow(clustDist.gj)) {
+  clustCvg.gj[i,1] <- unique(min(clustDist.gj[i,-i]))/2
+}
+
+clustCvg.gj <- cbind(cellClustMean.gj[,1],clustCvg.gj)
+cellClust2.gj <- merge(x=cellClust.gj, y=cellClustMean.gj , by= 'gpName', all.x=TRUE )
+cellClust3.gj <- merge(x=cellClust2.gj, y=clustCvg.gj , by= 'gpName', all.x=TRUE )
+
+# 대전 기지국
+
+clustData.dj <- as.data.frame(cellClustMean.dj[,c(3,2)])
+clustDist.dj <- distm(clustData.dj[,1:2])
+clustCvg.dj <- matrix(nrow=nrow(clustDist.dj), ncol=1)
+
+for (i in 1:nrow(clustDist.dj)) {
+  clustCvg.dj[i,1] <- unique(min(clustDist.dj[i,-i]))/2
+}
+
+clustCvg.dj <- cbind(cellClustMean.dj[,1],clustCvg.dj)
+cellClust2.dj <- merge(x=cellClust.dj, y=cellClustMean.dj , by= 'gpName', all.x=TRUE )
+cellClust3.dj <- merge(x=cellClust2.dj, y=clustCvg.dj , by= 'gpName', all.x=TRUE )
+
+######## 기술 메타 수행 단계 설정 ########
+G_SetCurrentTechMeta("클러스터별 '구/동' 단위 광고비 매칭")
+
+# 서울 기지국
+cellClust4.su <- merge(x=cellClust3.su, y=adTown.su , by= 'town_nm', all.x=TRUE )
+cellClustFinal.su <- merge(x=cellClust4.su, y=adCcw.su , by= 'ccw_nm', all.x=TRUE )
+
+colnames(cellClustFinal.su)[colnames(cellClustFinal.su) == "clustCvg.su"] <- c("clustCvg")
+
+cellClustFinal.su$ccw_nm <- as.character(cellClustFinal.su$ccw_nm)
+cellClustFinal.su$town_nm <- as.character(cellClustFinal.su$town_nm)
+cellClustFinal.su$gpName <- as.character(cellClustFinal.su$gpName)
+cellClustFinal.su$seq <- as.character(cellClustFinal.su$seq)
+cellClustFinal.su$lte_cel_id <- as.character(cellClustFinal.su$lte_cel_id)
+cellClustFinal.su$estb_addr <- as.character(cellClustFinal.su$estb_addr)
+cellClustFinal.su$lat_crdnt_addr <- as.double(cellClustFinal.su$lat_crdnt_addr)
+cellClustFinal.su$lot_crdnt_addr <- as.double(cellClustFinal.su$lot_crdnt_addr)
+cellClustFinal.su$meanLat <- as.double(cellClustFinal.su$meanLat)
+cellClustFinal.su$meanLot <- as.double(cellClustFinal.su$meanLot)
+cellClustFinal.su$clustCvg <- as.double(cellClustFinal.su$clustCvg)
+cellClustFinal.su$town_mean_cost <- as.integer(cellClustFinal.su$town_mean_cost)
+cellClustFinal.su$ccw_mean_cost <- as.integer(cellClustFinal.su$ccw_mean_cost)
+
+# insert data into table
+G_ExecuteSql(dbSource = "hadoop", sqlstmt = "TRUNCATE TABLE L2COT_DYNA_ANAL_CLUSTER_SU_11_TEMP")
+
+G_ImportDataFileToDB(dbSource="hadoop", dataFileName = cellClustFinal.su, tableName = "L2COT_DYNA_ANAL_CLUSTER_SU_11_TEMP")
+
+
+# 경기 기지국
+# cellClust4 <- merge(x=cellClust3, y=adTown , by= 'town_nm', all.x=TRUE )
+# cellClustFinal <- merge(x=cellClust4, y=adCcw , by= 'ccw_nm', all.x=TRUE )
+#
+
+colnames(cellClust3.ggi)[colnames(cellClust3.ggi) == "clustCvg.ggi"] <- c("clustCvg")
+
+cellClust3.ggi$ccw_nm <- as.character(cellClust3.ggi$ccw_nm)
+cellClust3.ggi$town_nm <- as.character(cellClust3.ggi$town_nm)
+cellClust3.ggi$gpName <- as.character(cellClust3.ggi$gpName)
+cellClust3.ggi$seq <- as.character(cellClust3.ggi$seq)
+cellClust3.ggi$lte_cel_id <- as.character(cellClust3.ggi$lte_cel_id)
+cellClust3.ggi$estb_addr <- as.character(cellClust3.ggi$estb_addr)
+cellClust3.ggi$lat_crdnt_addr <- as.double(cellClust3.ggi$lat_crdnt_addr)
+cellClust3.ggi$lot_crdnt_addr <- as.double(cellClust3.ggi$lot_crdnt_addr)
+cellClust3.ggi$meanLat <- as.double(cellClust3.ggi$meanLat)
+cellClust3.ggi$meanLot <- as.double(cellClust3.ggi$meanLot)
+cellClust3.ggi$clustCvg <- as.double(cellClust3.ggi$clustCvg)
+# cellClust3$town_mean_cost <- as.integer(cellClust3$town_mean_cost)
+# cellClust3$ccw_mean_cost <- as.integer(cellClust3$ccw_mean_cost)
+
+# insert data into table
+G_ExecuteSql(dbSource = "hadoop", sqlstmt = "TRUNCATE TABLE L2COT_DYNA_ANAL_CLUSTER_GGI_11_TEMP")
+
+G_ImportDataFileToDB(dbSource="hadoop", dataFileName = cellClust3.ggi, tableName = "L2COT_DYNA_ANAL_CLUSTER_GGI_11_TEMP")
+
+
+# 인천 기지국
+# cellClust4 <- merge(x=cellClust3, y=adTown , by= 'town_nm', all.x=TRUE )
+# cellClustFinal <- merge(x=cellClust4, y=adCcw , by= 'ccw_nm', all.x=TRUE )
+#
+
+colnames(cellClust3.icn)[colnames(cellClust3.icn) == "clustCvg.icn"] <- c("clustCvg")
+
+cellClust3.icn$ccw_nm <- as.character(cellClust3.icn$ccw_nm)
+cellClust3.icn$town_nm <- as.character(cellClust3.icn$town_nm)
+cellClust3.icn$gpName <- as.character(cellClust3.icn$gpName)
+cellClust3.icn$seq <- as.character(cellClust3.icn$seq)
+cellClust3.icn$lte_cel_id <- as.character(cellClust3.icn$lte_cel_id)
+cellClust3.icn$estb_addr <- as.character(cellClust3.icn$estb_addr)
+cellClust3.icn$lat_crdnt_addr <- as.double(cellClust3.icn$lat_crdnt_addr)
+cellClust3.icn$lot_crdnt_addr <- as.double(cellClust3.icn$lot_crdnt_addr)
+cellClust3.icn$meanLat <- as.double(cellClust3.icn$meanLat)
+cellClust3.icn$meanLot <- as.double(cellClust3.icn$meanLot)
+cellClust3.icn$clustCvg <- as.double(cellClust3.icn$clustCvg)
+# cellClust3$town_mean_cost <- as.integer(cellClust3$town_mean_cost)
+# cellClust3$ccw_mean_cost <- as.integer(cellClust3$ccw_mean_cost)
+
+# insert data into table
+G_ExecuteSql(dbSource = "hadoop", sqlstmt = "TRUNCATE TABLE L2COT_DYNA_ANAL_CLUSTER_ICN_11_TEMP")
+
+G_ImportDataFileToDB(dbSource="hadoop", dataFileName = cellClust3.icn, tableName = "L2COT_DYNA_ANAL_CLUSTER_ICN_11_TEMP")
+
+# 대구 기지국
+
+# cellClust4 <- merge(x=cellClust3, y=adTown , by= 'town_nm', all.x=TRUE )
+# cellClustFinal <- merge(x=cellClust4, y=adCcw , by= 'ccw_nm', all.x=TRUE )
+#
+
+colnames(cellClust3.dg)[colnames(cellClust3.dg) == "clustCvg.dg"] <- c("clustCvg")
+
+cellClust3.dg$ccw_nm <- as.character(cellClust3.dg$ccw_nm)
+cellClust3.dg$town_nm <- as.character(cellClust3.dg$town_nm)
+cellClust3.dg$gpName <- as.character(cellClust3.dg$gpName)
+cellClust3.dg$seq <- as.character(cellClust3.dg$seq)
+cellClust3.dg$lte_cel_id <- as.character(cellClust3.dg$lte_cel_id)
+cellClust3.dg$estb_addr <- as.character(cellClust3.dg$estb_addr)
+cellClust3.dg$lat_crdnt_addr <- as.double(cellClust3.dg$lat_crdnt_addr)
+cellClust3.dg$lot_crdnt_addr <- as.double(cellClust3.dg$lot_crdnt_addr)
+cellClust3.dg$meanLat <- as.double(cellClust3.dg$meanLat)
+cellClust3.dg$meanLot <- as.double(cellClust3.dg$meanLot)
+cellClust3.dg$clustCvg <- as.double(cellClust3.dg$clustCvg)
+# cellClust3$town_mean_cost <- as.integer(cellClust3$town_mean_cost)
+# cellClust3$ccw_mean_cost <- as.integer(cellClust3$ccw_mean_cost)
+
+# insert data into table
+G_ExecuteSql(dbSource = "hadoop", sqlstmt = "TRUNCATE TABLE L2COT_DYNA_ANAL_CLUSTER_DG_11_TEMP")
+
+G_ImportDataFileToDB(dbSource="hadoop", dataFileName = cellClust3.dg, tableName = "L2COT_DYNA_ANAL_CLUSTER_DG_11_TEMP")
+
+
+# 부산 기지국
+# cellClust4 <- merge(x=cellClust3, y=adTown , by= 'town_nm', all.x=TRUE )
+# cellClustFinal <- merge(x=cellClust4, y=adCcw , by= 'ccw_nm', all.x=TRUE )
+#
+
+colnames(cellClust3.bsn)[colnames(cellClust3.bsn) == "clustCvg.bsn"] <- c("clustCvg")
+
+cellClust3.bsn$ccw_nm <- as.character(cellClust3.bsn$ccw_nm)
+cellClust3.bsn$town_nm <- as.character(cellClust3.bsn$town_nm)
+cellClust3.bsn$gpName <- as.character(cellClust3.bsn$gpName)
+cellClust3.bsn$seq <- as.character(cellClust3.bsn$seq)
+cellClust3.bsn$lte_cel_id <- as.character(cellClust3.bsn$lte_cel_id)
+cellClust3.bsn$estb_addr <- as.character(cellClust3.bsn$estb_addr)
+cellClust3.bsn$lat_crdnt_addr <- as.double(cellClust3.bsn$lat_crdnt_addr)
+cellClust3.bsn$lot_crdnt_addr <- as.double(cellClust3.bsn$lot_crdnt_addr)
+cellClust3.bsn$meanLat <- as.double(cellClust3.bsn$meanLat)
+cellClust3.bsn$meanLot <- as.double(cellClust3.bsn$meanLot)
+cellClust3.bsn$clustCvg <- as.double(cellClust3.bsn$clustCvg)
+# cellClust3$town_mean_cost <- as.integer(cellClust3$town_mean_cost)
+# cellClust3$ccw_mean_cost <- as.integer(cellClust3$ccw_mean_cost)
+
+# insert data into table
+G_ExecuteSql(dbSource = "hadoop", sqlstmt = "TRUNCATE TABLE L2COT_DYNA_ANAL_CLUSTER_BSN_11_TEMP")
+
+G_ImportDataFileToDB(dbSource="hadoop", dataFileName = cellClust3.bsn, tableName = "L2COT_DYNA_ANAL_CLUSTER_BSN_11_TEMP")
+
+# 광주 기지국
+# cellClust4 <- merge(x=cellClust3, y=adTown , by= 'town_nm', all.x=TRUE )
+# cellClustFinal <- merge(x=cellClust4, y=adCcw , by= 'ccw_nm', all.x=TRUE )
+#
+
+colnames(cellClust3.gj)[colnames(cellClust3.gj) == "clustCvg.gj"] <- c("clustCvg")
+
+cellClust3.gj$ccw_nm <- as.character(cellClust3.gj$ccw_nm)
+cellClust3.gj$town_nm <- as.character(cellClust3.gj$town_nm)
+cellClust3.gj$gpName <- as.character(cellClust3.gj$gpName)
+cellClust3.gj$seq <- as.character(cellClust3.gj$seq)
+cellClust3.gj$lte_cel_id <- as.character(cellClust3.gj$lte_cel_id)
+cellClust3.gj$estb_addr <- as.character(cellClust3.gj$estb_addr)
+cellClust3.gj$lat_crdnt_addr <- as.double(cellClust3.gj$lat_crdnt_addr)
+cellClust3.gj$lot_crdnt_addr <- as.double(cellClust3.gj$lot_crdnt_addr)
+cellClust3.gj$meanLat <- as.double(cellClust3.gj$meanLat)
+cellClust3.gj$meanLot <- as.double(cellClust3.gj$meanLot)
+cellClust3.gj$clustCvg <- as.double(cellClust3.gj$clustCvg)
+# cellClust3$town_mean_cost <- as.integer(cellClust3$town_mean_cost)
+# cellClust3$ccw_mean_cost <- as.integer(cellClust3$ccw_mean_cost)
+
+# insert data into table
+G_ExecuteSql(dbSource = "hadoop", sqlstmt = "TRUNCATE TABLE L2COT_DYNA_ANAL_CLUSTER_GJ_11_TEMP")
+
+G_ImportDataFileToDB(dbSource="hadoop", dataFileName = cellClust3.gj, tableName = "L2COT_DYNA_ANAL_CLUSTER_GJ_11_TEMP")
+
+# 대전 기지국
+# cellClust4 <- merge(x=cellClust3, y=adTown , by= 'town_nm', all.x=TRUE )
+# cellClustFinal <- merge(x=cellClust4, y=adCcw , by= 'ccw_nm', all.x=TRUE )
+#
+
+colnames(cellClust3.dj)[colnames(cellClust3.dj) == "clustCvg.dj"] <- c("clustCvg")
+
+cellClust3.dj$ccw_nm <- as.character(cellClust3.dj$ccw_nm)
+cellClust3.dj$town_nm <- as.character(cellClust3.dj$town_nm)
+cellClust3.dj$gpName <- as.character(cellClust3.dj$gpName)
+cellClust3.dj$seq <- as.character(cellClust3.dj$seq)
+cellClust3.dj$lte_cel_id <- as.character(cellClust3.dj$lte_cel_id)
+cellClust3.dj$estb_addr <- as.character(cellClust3.dj$estb_addr)
+cellClust3.dj$lat_crdnt_addr <- as.double(cellClust3.dj$lat_crdnt_addr)
+cellClust3.dj$lot_crdnt_addr <- as.double(cellClust3.dj$lot_crdnt_addr)
+cellClust3.dj$meanLat <- as.double(cellClust3.dj$meanLat)
+cellClust3.dj$meanLot <- as.double(cellClust3.dj$meanLot)
+cellClust3.dj$clustCvg <- as.double(cellClust3.dj$clustCvg)
+# cellClust3$town_mean_cost <- as.integer(cellClust3$town_mean_cost)
+# cellClust3$ccw_mean_cost <- as.integer(cellClust3$ccw_mean_cost)
+
+
+# insert data into table
+
+G_ExecuteSql(dbSource = "hadoop", sqlstmt = "TRUNCATE TABLE L2COT_DYNA_ANAL_CLUSTER_DJ_11_TEMP")
+
+G_ImportDataFileToDB(dbSource="hadoop", dataFileName = cellClust3.dj, tableName = "L2COT_DYNA_ANAL_CLUSTER_DJ_11_TEMP")
+
+
+######## 기술 메타 수행 단계 설정 ########
+G_SetCurrentTechMeta("exit")
+
+finaltime <- proc.time()
+
